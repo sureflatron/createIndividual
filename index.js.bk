@@ -1,0 +1,182 @@
+const express = require("express");
+const { createHandler } = require("graphql-http/lib/use/express");
+const { buildSchema } = require("graphql");
+const { v4: uuidv4 } = require("uuid"); // Importa la función para generar UUID
+require("dotenv").config();
+const mongoose = require("mongoose");
+
+// Conectar a MongoDB con manejo de errores
+async function connectMongoDB() {
+  try {
+    const uri = process.env.MONGO_URI;
+
+    // Verificar que la URI está definida
+    if (!uri) {
+      throw new Error("MONGO_URI no está definida en el archivo .env");
+    } else {
+      console.log(process.env.MONGO_URI); // Esto debería mostrar la URL de conexión de MongoDB
+    }
+
+    await mongoose.connect(uri, {
+      //useNewUrlParser: true,
+      //useUnifiedTopology: true,
+    });
+    console.log("Conectado a MongoDB");
+  } catch (err) {
+    console.error("Error al conectar a MongoDB:", err);
+  }
+}
+
+connectMongoDB();
+
+// Definir esquemas de Mongoose
+const userSnCSchema = new mongoose.Schema({
+  createdAt: { type: Date },
+  familyName: String,
+  givenName: String,
+  nationality: String,
+  dateOfBirth: Date,
+  identificationsIdentificationId: String,
+  identificationsIdentificationType: String,
+  identificationsStartDatetime: Date,
+  contactMediaStartDatetime: Date,
+  _class: String,
+});
+
+// Crear el modelo de Mongoose
+//const UserSnC = mongoose.model("UserSnC", userSnCSchema);
+const UserSnC = mongoose.model("UserSnC", userSnCSchema, "userSnCnode");
+
+// Definir el esquema GraphQL
+const schema = buildSchema(`
+  type Query {
+    _: Boolean
+  }
+
+  type Mutation {
+    individualCreate(input: IndividualInput!, sync: Int!): IndividualResponse
+  }
+
+  input IndividualInput {
+    included: InstanceInput
+  }
+
+  input InstanceInput {
+    newInstance: AttributesInput
+  }
+
+  input AttributesInput {
+    attributes: IndividualAttributes
+    included: IncludedInput
+  }
+
+  input IndividualAttributes {
+    familyName: String!
+    givenName: String!
+    nationality: String!
+    dateOfBirth: String!
+  }
+
+  input IncludedInput {
+    identifications: IdentificationInput
+  }
+
+  input IdentificationInput {
+    attributes: IdentificationAttributes
+  }
+
+  input IdentificationAttributes {
+    identificationId: String!
+    identificationType: IdentificationType!
+    validFor: ValidForInput
+  }
+
+  input ValidForInput {
+    startDatetime: String!
+  }
+
+  enum IdentificationType {
+    CC
+    PASSPORT
+    DRIVER_LICENSE
+  }
+
+  type IndividualResponse {
+    id: String
+    lifecycleStatus: String
+    requestedAt: String
+  }
+`);
+
+// Resolver para manejar la mutación y guardar en MongoDB
+const root = {
+  individualCreate: async ({ input, sync }) => {
+    try {
+      const {
+        included: {
+          newInstance: {
+            attributes: { familyName, givenName, nationality, dateOfBirth },
+            included: {
+              identifications: {
+                attributes: {
+                  identificationId,
+                  identificationType,
+                  validFor: { startDatetime },
+                },
+              },
+            },
+          },
+        },
+      } = input;
+
+      // Buscar documento con el mismo número de identificación y tipo
+      const existingUser = await UserSnC.findOne({
+        identificationsIdentificationId: identificationId,
+        identificationsIdentificationType: identificationType,
+      });
+
+      // Si ya existe, lanzar un error que será capturado por GraphQL
+      if (existingUser) {
+        throw new Error("El registro ya existe"); // Lanza un error en lugar de devolver un objeto de error
+      }
+
+      // Crear nuevo documento si no existe
+      const newUser = new UserSnC({
+        createdAt: new Date(),
+        familyName,
+        givenName,
+        nationality,
+        dateOfBirth: new Date(dateOfBirth),
+        identificationsIdentificationId: identificationId,
+        identificationsIdentificationType: identificationType,
+        identificationsStartDatetime: new Date(startDatetime),
+        contactMediaStartDatetime: new Date(),
+        _class: "IndividualClass",
+      });
+
+      await newUser.save();
+
+      return {
+        id: newUser._id.toString(),
+        lifecycleStatus: "ACTIVE",
+        requestedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      // Si hay un error, lanzar el error para que GraphQL lo capture
+      console.log("Error: " + error.message);
+      throw new Error(error.message || "Error desconocido");
+    }
+  },
+};
+
+// Configurar el servidor de Express y GraphQL
+const app = express();
+app.use("/graphql", createHandler({ schema, rootValue: root }));
+
+// Iniciar el servidor
+const PORT = 5000;
+app.listen(PORT, () => {
+  console.log(
+    `Servidor GraphQL ejecutándose en http://localhost:${PORT}/graphql`
+  );
+});
